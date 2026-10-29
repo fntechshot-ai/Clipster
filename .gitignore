@@ -1,0 +1,14 @@
+# Build output
+build/
+buildtmp/
+dist/
+*.dmg
+*.pkg
+
+# macOS
+.DS_Store
+
+# Xcode user data
+xcuserdata/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
