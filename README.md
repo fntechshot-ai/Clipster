@@ -12,6 +12,21 @@ A lightweight macOS **menu bar clipboard history** app, written in Swift + Swift
 
 Requires **macOS 13+**.
 
+## Install (download)
+
+1. Grab `Clipster.dmg` from the [latest release](https://github.com/fntechshot-ai/Clipster/releases/latest).
+2. Open the DMG and drag **Clipster** into **Applications**.
+3. The app is **ad-hoc signed** (no paid Apple Developer certificate), so on first
+   launch macOS Gatekeeper will warn it's from an "unidentified developer".
+   To open it:
+   - **Right-click** `Clipster.app` → **Open** → **Open**, or
+   - run once in Terminal:
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/Clipster.app
+     ```
+
+Prefer to build it yourself? See [Build](#build) below.
+
 ## Build
 
 ### Option A — without Xcode (Command Line Tools only)
