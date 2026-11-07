@@ -20,7 +20,6 @@ swiftc -O \
   Clipster/ClipboardManager.swift \
   Clipster/OCRService.swift \
   Clipster/AIActions.swift \
-  Clipster/OllamaClient.swift \
   Clipster/AppleFMProvider.swift \
   Tests/main.swift \
   -o "${OUT}" \

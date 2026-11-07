@@ -60,14 +60,25 @@ enum AIAction: Equatable {
 }
 
 enum AILimits {
-    /// Bound request sizes rather than silently truncating.
-    static let maxInputCharacters = 24_000
-    /// Longest side of the working copy sent to a vision model.
-    static let maxImageDimension: CGFloat = 2_048
-    /// Hard cap on the encoded image payload.
-    static let maxImageBytes = 20 * 1024 * 1024
-    /// Keep follow-up conversations bounded (user+assistant messages).
-    static let maxConversationMessages = 12
-    /// Idle timeout between streamed chunks, seconds.
-    static let requestTimeout: TimeInterval = 120
+    /// Bound request sizes rather than silently truncating. The on-device
+    /// Apple model has a ~4096-token context window shared with its output,
+    /// so anything much larger than this would fail inside the model anyway.
+    static let maxInputCharacters = 12_000
+}
+
+enum AIError: LocalizedError, Equatable {
+    case notConfigured
+    case inputTooLong(Int)
+    case modelError(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notConfigured:
+            return "AI actions are not available. Enable them in Settings → AI."
+        case .inputTooLong(let count):
+            return "The selected content is too long for the on-device Apple model (\(count) characters, limit \(AILimits.maxInputCharacters)). Copy a smaller selection and retry."
+        case .modelError(let message):
+            return message
+        }
+    }
 }

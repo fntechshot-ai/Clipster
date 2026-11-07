@@ -309,54 +309,7 @@ test("backfill targets only images that need OCR") {
     expect(m.item(doneID)?.ocrText == "already done", "already-done result untouched")
 }
 
-// MARK: - Ollama client parsing & loopback policy
-
-test("loopback endpoint validation") {
-    func ok(_ s: String) -> Bool { OllamaClient.isLoopbackURL(URL(string: s)!) }
-    expect(ok("http://127.0.0.1:11434"), "127.0.0.1 accepted")
-    expect(ok("http://localhost:11434"), "localhost accepted")
-    expect(ok("http://127.9.8.7:11434"), "127/8 accepted")
-    expect(ok("http://[::1]:11434"), "IPv6 loopback accepted")
-    expect(!ok("http://192.168.1.10:11434"), "LAN address rejected")
-    expect(!ok("http://evil.example.com:11434"), "external host rejected")
-    expect(!ok("ftp://127.0.0.1"), "non-http scheme rejected")
-    expect(OllamaClient(endpoint: "http://10.0.0.5:11434") == nil, "client refuses non-loopback endpoint")
-    expect(OllamaClient(endpoint: "http://127.0.0.1:11434") != nil, "client accepts loopback endpoint")
-}
-
-test("model list parsing marks cloud-backed models and vision capability") {
-    let fixture = """
-    {"models":[
-      {"name":"gemma2:9b","capabilities":["completion"]},
-      {"name":"qwen2.5vl:7b","capabilities":["completion","vision"]},
-      {"name":"gpt-oss:120b-cloud","capabilities":["completion"]},
-      {"name":"old-model:latest"}
-    ]}
-    """
-    let models = try OllamaClient.parseModels(fixture.data(using: .utf8)!)
-    expect(models.count == 4, "all models parsed")
-    expect(models[0].isCloudBacked == false && models[0].supportsVision == false, "gemma2 is local, text-only")
-    expect(models[1].supportsVision, "qwen2.5vl reports vision")
-    expect(models[2].isCloudBacked, "-cloud suffix flagged as cloud-backed")
-    expect(models[3].capabilities.isEmpty, "missing capabilities tolerated")
-}
-
-test("chat stream line parsing") {
-    let chunk = try OllamaClient.parseChatLine(#"{"message":{"role":"assistant","content":"Olá"},"done":false}"#)
-    expect(chunk.content == "Olá" && chunk.done == false, "content chunk parsed")
-    let final = try OllamaClient.parseChatLine(#"{"message":{"role":"assistant","content":""},"done":true,"total_duration":1}"#)
-    expect(final.done, "done flag parsed")
-    do {
-        _ = try OllamaClient.parseChatLine(#"{"error":"model not found"}"#)
-        expect(false, "error line should throw")
-    } catch let e as AIError {
-        expect(e == .modelError("model not found"), "model error surfaced")
-    }
-    do {
-        _ = try OllamaClient.parseChatLine("not json")
-        expect(false, "malformed line should throw")
-    } catch {}
-}
+// MARK: - AI actions
 
 test("AI action prompts delimit untrusted content and carry parameters") {
     let t = AIAction.translate(target: "Portuguese (Portugal)")

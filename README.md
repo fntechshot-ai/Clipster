@@ -6,7 +6,7 @@ A lightweight macOS **menu bar clipboard history** app, written in Swift + Swift
 - 🔎 **OCR**: text in copied images is recognized locally (Apple Vision) and becomes **searchable**
 - 📸 **Capture Area** (⌥⌘4): select a screen region → image lands on the clipboard + history
 - 📝 **Capture Text** (⌥⌘5): select a screen region → its **text** lands on the clipboard, ready to paste
-- ✨ Optional **local AI actions** (translate / summarize / rewrite / explain / analyze image) via **Apple Intelligence** (built-in, macOS 26+) or [Ollama](https://ollama.com) — fully on-device, disabled until configured
+- ✨ Optional **AI actions** (translate / summarize / rewrite / explain / custom) via **Apple Intelligence** — fully on-device, nothing to install, disabled until enabled (macOS 26+)
 - 📌 **Pin** important items and **Clear Unpinned** the rest
 - 🔤 **Paste as Plain Text**
 - 🖼️ Thumbnails & type badges (TXT / HTML / IMG / FILE)
@@ -95,30 +95,26 @@ detection where supported. OCR text never replaces your clipboard on its own —
 only the explicit *Copy Text* / *Capture Text* actions write text to the
 clipboard.
 
-## Local AI actions (optional)
+## AI actions (optional, Apple Intelligence)
 
 Clipster can run **translate / summarize / rewrite / explain / custom
-instruction** on text items (and on text extracted from images), plus
-**Analyze Image** with follow-up questions — all **on this Mac**. There is no
-cloud fallback, no bundled API key and no automatic model download.
+instruction** on text items — and on the text extracted from images by OCR —
+entirely on this Mac, using Apple's built-in on-device model. Nothing to
+install, no server, no API key, no cloud fallback; enable it in
+**Settings → AI**.
 
-Text actions can run on either backend (Settings → AI):
+Requires macOS 26+ on Apple Silicon with Apple Intelligence turned on
+(System Settings → Apple Intelligence & Siri). On older systems the AI
+section simply shows why it's unavailable; everything else keeps working.
 
-- **Apple Intelligence (built-in)** — zero setup on macOS 26+ Apple Silicon
-  with Apple Intelligence enabled. Small on-device model: fast and private,
-  but noticeably weaker than a 7–9B server model for translation and nuance.
-- **Local server (Ollama)** — install [Ollama](https://ollama.com), pull a
-  model (e.g. `ollama pull gemma2:9b`), then test the connection in
-  **Settings → AI** (default endpoint `http://127.0.0.1:11434`).
+Notes:
 
-**Analyze Image always needs the local server** with a vision-capable model
-(e.g. `ollama pull qwen2.5vl:7b`) — Apple's public on-device API takes no
-image input.
-
-Only loopback endpoints are accepted, redirects off loopback are refused and
-models that proxy to a cloud backend (names like `…-cloud`) are excluded from
-the pickers. Content is only ever sent when you explicitly run an action, and
-only the selected item's content — never your whole history.
+- The on-device model is small: fast and private, but expect weaker
+  translations and nuance than large models.
+- Visual image analysis (asking questions about a picture) is not offered —
+  Apple's public on-device API takes no image input, and Clipster won't
+  pretend a text model saw your image. OCR text extraction from images is
+  unaffected (that's Apple Vision, not an LLM).
 
 ## Launch at login
 
@@ -141,11 +137,9 @@ launchctl load ~/Library/LaunchAgents/com.francisconeto.Clipster.plist
 ## Privacy
 
 Clipster stores its history **only on your Mac**. Nothing is sent anywhere:
-OCR and screen capture are fully local, and the optional AI actions talk only
-to a loopback endpoint on your machine, only when you explicitly trigger them.
-If your local server proxies certain models to a cloud backend, Clipster
-excludes the known ones (`…-cloud`), but it cannot audit arbitrary server
-configurations — keep your local server local. Enable "Ignore passwords" in
+OCR and screen capture are fully local, and the optional AI actions run on
+Apple's on-device model, only when you explicitly trigger them, and only on
+the selected item — never your whole history. Enable "Ignore passwords" in
 Settings if you don't want concealed clipboard items saved to history. While
 clipboard capture is paused, the capture commands still write to the clipboard
 but save nothing to history.

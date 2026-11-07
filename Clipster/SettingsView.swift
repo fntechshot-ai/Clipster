@@ -164,114 +164,20 @@ struct ShortcutRecorderRow: View {
 
 struct AISettingsTab: View {
     @ObservedObject var config = AIConfig.shared
-    @State private var models: [AIModel] = []
-    @State private var statusMessage: String?
-    @State private var testing = false
 
     var body: some View {
         Form {
-            Toggle("Enable local AI actions", isOn: $config.enabled)
-            Text("AI actions run on demand and fully on this Mac. Nothing is sent anywhere until you explicitly run an action, and only the selected item's content is sent — never the whole history.")
+            Toggle("Enable AI actions (Apple Intelligence)", isOn: $config.enabled)
+            Text(AppleFMBridge.statusDescription)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-
-            Picker("Text actions run on", selection: $config.providerRaw) {
-                Text("Apple Intelligence (built-in)").tag(AITextProvider.apple.rawValue)
-                Text("Local server (Ollama)").tag(AITextProvider.ollama.rawValue)
-            }
-            .pickerStyle(.radioGroup)
-            if config.provider == .apple {
-                Text(AppleFMBridge.statusDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-            Text("Local server — used for text actions when selected above, and always for image analysis (the Apple model cannot see images).")
+            Text("Translate, summarize, rewrite, explain and custom instructions run entirely on this Mac using Apple's built-in model. Content is only processed when you explicitly run an action, and only the selected item — never your whole history.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-
-            TextField("Server endpoint", text: $config.endpoint, prompt: Text(OllamaClient.defaultEndpoint))
-                .disableAutocorrection(true)
-                .accessibilityLabel("Local AI server endpoint")
-            if !config.endpoint.isEmpty, OllamaClient(endpoint: config.endpoint) == nil {
-                Label("Only loopback endpoints are accepted (http://127.0.0.1:… or http://localhost:…).",
-                      systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Button("Test connection & refresh models") { testConnection() }
-                    .disabled(testing || OllamaClient(endpoint: config.endpoint) == nil)
-                if testing { ProgressView().controlSize(.small) }
-            }
-            if let statusMessage {
-                Text(statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            Picker("Text model", selection: $config.textModel) {
-                Text("None").tag("")
-                ForEach(models) { m in
-                    Text(m.name).tag(m.name)
-                }
-                if !config.textModel.isEmpty && !models.contains(where: { $0.name == config.textModel }) {
-                    Text(config.textModel).tag(config.textModel)
-                }
-            }
-            Picker("Vision model (image analysis)", selection: $config.visionModel) {
-                Text("None").tag("")
-                ForEach(models.filter(\.supportsVision)) { m in
-                    Text(m.name).tag(m.name)
-                }
-                if !config.visionModel.isEmpty && !models.contains(where: { $0.name == config.visionModel }) {
-                    Text(config.visionModel).tag(config.visionModel)
-                }
-            }
-            if !models.isEmpty && !models.contains(where: \.supportsVision) {
-                Text("No installed model reports vision support. To analyze images, install one locally, e.g.: ollama pull qwen2.5vl:7b")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-            Text("Models that proxy to a cloud backend (e.g. “…-cloud”) are excluded. A localhost endpoint alone does not guarantee local inference — verify your server runs the selected model locally.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            Text("Text inside images is extracted locally with Apple Vision OCR, and AI actions can run on that extracted text. Visual image analysis (asking questions about a picture) is not available: the on-device Apple model cannot see images.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding()
-        .onAppear {
-            // Populate pickers from the server only when this tab is opened,
-            // never periodically in the background.
-            if config.enabled { testConnection(quiet: true) }
-        }
-    }
-
-    private func testConnection(quiet: Bool = false) {
-        guard let client = OllamaClient(endpoint: config.endpoint) else {
-            statusMessage = AIError.nonLoopbackEndpoint.errorDescription
-            return
-        }
-        testing = true
-        if !quiet { statusMessage = nil }
-        Task { @MainActor in
-            defer { testing = false }
-            do {
-                let version = try await client.version()
-                let all = try await client.listModels()
-                let local = all.filter { !$0.isCloudBacked }
-                let excluded = all.count - local.count
-                models = local
-                var msg = "Connected (Ollama \(version)). \(local.count) local model\(local.count == 1 ? "" : "s") found"
-                if excluded > 0 { msg += "; \(excluded) cloud-backed model\(excluded == 1 ? "" : "s") excluded" }
-                statusMessage = msg + "."
-            } catch {
-                if !quiet {
-                    statusMessage = (error as? AIError)?.errorDescription ?? error.localizedDescription
-                }
-            }
-        }
     }
 }

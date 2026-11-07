@@ -2,20 +2,19 @@ import SwiftUI
 import AppKit
 
 /// Focused detail/result panel for one history item: image preview, recognized
-/// text, and on-demand local AI actions. Shown inside the popover in place of
-/// the list; the Back button returns to history.
+/// text, and on-demand AI actions on the item's text (for images, on the text
+/// extracted by OCR — the on-device Apple model cannot see images, and the UI
+/// never pretends otherwise). Shown inside the popover in place of the list;
+/// the Back button returns to history.
 struct DetailView: View {
     @EnvironmentObject var manager: ClipboardManager
     @ObservedObject var config = AIConfig.shared
     @StateObject private var textSession = AISession()
-    @StateObject private var imageSession = AISession()
 
     let item: ClipItem
 
     @State private var customInstruction = ""
     @State private var customTarget = ""
-    @State private var analysisPrompt = ""
-    @State private var followUp = ""
 
     private var sourceText: String? {
         switch item.type {
@@ -33,7 +32,6 @@ struct DetailView: View {
                     if item.type == .image { imagePreview; ocrSection }
                     if item.type == .text || item.type == .html { originalTextSection }
                     if sourceText != nil { aiTextSection }
-                    if item.type == .image { analyzeImageSection }
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 12)
@@ -44,7 +42,6 @@ struct DetailView: View {
         .onAppear(perform: runPendingActionIfAny)
         .onDisappear {
             textSession.cancel()
-            imageSession.cancel()
         }
     }
 
@@ -158,7 +155,7 @@ struct DetailView: View {
         }
     }
 
-    // MARK: - AI text actions
+    // MARK: - AI text actions (on-device Apple model)
 
     @ViewBuilder
     private var aiTextSection: some View {
@@ -169,8 +166,7 @@ struct DetailView: View {
             } else {
                 aiActionButtons
                 customInstructionRow
-                AIResultView(session: textSession, manager: manager,
-                             emptyHint: nil, sourceLabel: "Result")
+                AIResultView(session: textSession, manager: manager, sourceLabel: "Result")
             }
         }
     }
@@ -229,108 +225,6 @@ struct DetailView: View {
         if config.isReadyForText { run(action) }
     }
 
-    // MARK: - Image analysis
-
-    @ViewBuilder
-    private var analyzeImageSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionTitle("Analyze image")
-            if let hint = config.visionSetupHint {
-                aiSetupHint(hint)
-            } else {
-                HStack {
-                    TextField("Question about the image", text: $analysisPrompt)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { analyze(analysisPrompt) }
-                        .accessibilityLabel("Question about the image")
-                    Menu {
-                        Button("Describe this image") { analyze("Describe this image.") }
-                        Button("Explain this error") { analyze("Explain the error shown in this image.") }
-                        Button("Explain this chart") { analyze("Explain the chart shown in this image.") }
-                    } label: {
-                        Image(systemName: "sparkles")
-                    }
-                    .fixedSize()
-                    .accessibilityLabel("Suggested questions")
-                    Button("Ask") { analyze(analysisPrompt) }
-                        .disabled(analysisPrompt.trimmingCharacters(in: .whitespaces).isEmpty || imageSession.running)
-                }
-                conversationView
-                // While streaming, the partial answer shows inline; once it
-                // finishes it moves into the conversation above.
-                AIResultView(session: imageSession, manager: manager,
-                             emptyHint: nil, sourceLabel: "Answer",
-                             showOutputInline: imageSession.running,
-                             showResultActions: false)
-                if imageSession.finished && !imageSession.output.isEmpty {
-                    HStack {
-                        Button {
-                            manager.copyString(imageSession.output)
-                        } label: {
-                            Label("Copy Result", systemImage: "doc.on.doc")
-                        }
-                        Button {
-                            manager.append(ClipItem(id: UUID(), pinned: false, date: Date(), type: .text,
-                                                    text: imageSession.output, html: nil, imagePNG: nil, files: nil))
-                        } label: {
-                            Label("Save to History", systemImage: "tray.and.arrow.down")
-                        }
-                        .help("Save the answer as a new history item; the original image is never modified")
-                    }
-                }
-                if !imageSession.conversation.isEmpty && !imageSession.running {
-                    HStack {
-                        TextField("Follow-up question", text: $followUp)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit { askFollowUp() }
-                            .accessibilityLabel("Follow-up question about the image")
-                        Button("Ask") { askFollowUp() }
-                            .disabled(followUp.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                    Text("This conversation is kept in memory only and is discarded when you leave this panel.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var conversationView: some View {
-        // Completed turns; the in-progress answer streams in AIResultView below.
-        let turns = imageSession.conversation.filter { $0.role == "assistant" || $0.role == "user" }
-        if turns.contains(where: { $0.role == "assistant" }) || turns.count > 1 {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(turns.enumerated()), id: \.offset) { _, msg in
-                    HStack(alignment: .top, spacing: 6) {
-                        Text(msg.role == "user" ? "You:" : "AI:")
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
-                        Text(msg.content)
-                            .font(.callout)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-            .padding(8)
-            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-        }
-    }
-
-    private func analyze(_ prompt: String) {
-        let p = prompt.trimmingCharacters(in: .whitespaces)
-        guard !p.isEmpty, let png = item.imagePNG else { return }
-        imageSession.analyzeImage(prompt: p, imagePNG: png, config: config)
-    }
-
-    private func askFollowUp() {
-        let q = followUp.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty, let png = item.imagePNG else { return }
-        followUp = ""
-        imageSession.followUp(question: q, imagePNG: png, config: config)
-    }
-
     // MARK: - Helpers
 
     private func sectionTitle(_ s: String) -> some View {
@@ -352,14 +246,11 @@ struct DetailView: View {
     }
 }
 
-/// Shared result area: progress, streamed output, errors, and result actions.
+/// Result area: progress, streamed output, errors, and result actions.
 struct AIResultView: View {
     @ObservedObject var session: AISession
     let manager: ClipboardManager
-    var emptyHint: String?
     var sourceLabel: String
-    var showOutputInline: Bool = true
-    var showResultActions: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -379,7 +270,7 @@ struct AIResultView: View {
                     .textSelection(.enabled)
                 Button("Retry") { session.retry() }
             }
-            if !session.output.isEmpty && showOutputInline {
+            if !session.output.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(sourceLabel)
@@ -397,7 +288,7 @@ struct AIResultView: View {
                         .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor.opacity(0.25)))
                 }
-                if session.finished && showResultActions {
+                if session.finished {
                     HStack {
                         Button {
                             manager.copyString(session.output)

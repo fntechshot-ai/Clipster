@@ -87,9 +87,6 @@ struct ContentView: View {
                     manager.detailItemID = item.id
                 }
             }
-            if aiConfig.enabled {
-                Button("Analyze Image") { manager.detailItemID = item.id }
-            }
         }
         if (item.type == .text || item.type == .html), aiConfig.isReadyForText {
             Menu("AI Actions") {
