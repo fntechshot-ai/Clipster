@@ -370,6 +370,33 @@ test("AI action prompts delimit untrusted content and carry parameters") {
     }
 }
 
+// MARK: - Apple on-device model (runs only where Apple Intelligence is available)
+
+test("Apple Intelligence bridge streams deltas (skipped when unavailable)") {
+    guard AppleFMBridge.isSupported else {
+        print("  … skipped: \(AppleFMBridge.statusDescription)")
+        return
+    }
+    var collected = ""
+    var finished = false
+    var streamError: Error?
+    let stream = AppleFMBridge.stream(system: "Reply with exactly one short sentence.",
+                                      prompt: "Say hello.")
+    Task {
+        do {
+            for try await delta in stream { collected += delta }
+        } catch {
+            streamError = error
+        }
+        finished = true
+    }
+    let done = pump(timeout: 60) { finished }
+    expect(done, "generation finished in time")
+    expect(streamError == nil, "no stream error: \(String(describing: streamError))")
+    expect(!collected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           "assembled a non-empty response from deltas: \(collected)")
+}
+
 // MARK: - Done
 
 print("\n\(checks) checks, \(failures) failure(s)")

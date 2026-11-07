@@ -1,12 +1,22 @@
 import Foundation
 import AppKit
 
+/// Text-action backends. Image analysis always uses the local server's vision
+/// model — Apple's on-device model takes no image input.
+enum AITextProvider: String {
+    case apple   // Apple Intelligence (FoundationModels), macOS 26+
+    case ollama  // local server over loopback
+}
+
 /// Persisted AI configuration (UserDefaults-backed).
 final class AIConfig: ObservableObject {
     static let shared = AIConfig()
 
     @Published var enabled: Bool {
         didSet { UserDefaults.standard.set(enabled, forKey: "aiEnabled") }
+    }
+    @Published var providerRaw: String {
+        didSet { UserDefaults.standard.set(providerRaw, forKey: "aiProvider") }
     }
     @Published var endpoint: String {
         didSet { UserDefaults.standard.set(endpoint, forKey: "aiEndpoint") }
@@ -21,13 +31,41 @@ final class AIConfig: ObservableObject {
     private init() {
         let d = UserDefaults.standard
         enabled = d.bool(forKey: "aiEnabled")
+        // Default to the built-in Apple model when this Mac has it.
+        providerRaw = d.string(forKey: "aiProvider")
+            ?? (AppleFMBridge.isSupported ? AITextProvider.apple.rawValue : AITextProvider.ollama.rawValue)
         endpoint = d.string(forKey: "aiEndpoint") ?? OllamaClient.defaultEndpoint
         textModel = d.string(forKey: "aiTextModel") ?? ""
         visionModel = d.string(forKey: "aiVisionModel") ?? ""
     }
 
-    var isReadyForText: Bool { enabled && !textModel.isEmpty && client != nil }
-    var isReadyForVision: Bool { enabled && !visionModel.isEmpty && client != nil }
+    var provider: AITextProvider { AITextProvider(rawValue: providerRaw) ?? .ollama }
+
+    /// Why text actions can't run right now, or nil when they can.
+    var textSetupHint: String? {
+        if !enabled { return "Local AI actions are disabled." }
+        switch provider {
+        case .apple:
+            return AppleFMBridge.isSupported ? nil : AppleFMBridge.statusDescription
+        case .ollama:
+            if client == nil { return "The AI endpoint must be a loopback address (127.0.0.1 / localhost)." }
+            if textModel.isEmpty { return "No text model selected." }
+            return nil
+        }
+    }
+
+    /// Why image analysis can't run right now, or nil when it can.
+    var visionSetupHint: String? {
+        if !enabled { return "Local AI actions are disabled." }
+        if client == nil { return "The AI endpoint must be a loopback address (127.0.0.1 / localhost)." }
+        if visionModel.isEmpty {
+            return "No vision-capable model selected. Image analysis needs a local vision model (e.g. qwen2.5vl or llava) — the on-device Apple model cannot see images."
+        }
+        return nil
+    }
+
+    var isReadyForText: Bool { textSetupHint == nil }
+    var isReadyForVision: Bool { visionSetupHint == nil }
 
     var client: OllamaClient? { OllamaClient(endpoint: endpoint) }
 }
@@ -114,9 +152,21 @@ final class AISession: ObservableObject {
         output = ""
         finished = false
 
-        guard config.enabled, !model.isEmpty, let client = config.client else {
-            errorMessage = AIError.notConfigured.errorDescription
-            return
+        // Text actions may run on the on-device Apple model; anything with an
+        // image always needs the local server's vision model.
+        let useApple = images.isEmpty && config.provider == .apple
+        var client: OllamaClient?
+        if useApple {
+            guard config.enabled, AppleFMBridge.isSupported else {
+                errorMessage = config.textSetupHint ?? AIError.notConfigured.errorDescription
+                return
+            }
+        } else {
+            guard config.enabled, !model.isEmpty, let c = config.client else {
+                errorMessage = AIError.notConfigured.errorDescription
+                return
+            }
+            client = c
         }
         let totalChars = messages.reduce(0) { $0 + $1.content.count }
         guard totalChars <= AILimits.maxInputCharacters else {
@@ -134,7 +184,14 @@ final class AISession: ObservableObject {
         let gen = generation
         task = Task { [weak self] in
             do {
-                let stream = client.chatStream(model: model, messages: messages, imagesPNG: images)
+                let stream: AsyncThrowingStream<String, Error>
+                if useApple {
+                    let system = messages.first(where: { $0.role == "system" })?.content ?? ""
+                    let prompt = messages.last(where: { $0.role == "user" })?.content ?? ""
+                    stream = AppleFMBridge.stream(system: system, prompt: prompt)
+                } else {
+                    stream = client!.chatStream(model: model, messages: messages, imagesPNG: images)
+                }
                 for try await chunk in stream {
                     guard let self, self.generation == gen, !Task.isCancelled else { return }
                     self.output += chunk

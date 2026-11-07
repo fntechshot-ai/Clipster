@@ -16,12 +16,21 @@ mkdir -p "${OUT}/Contents/MacOS" "${OUT}/Contents/Resources" buildtmp
 
 ARCH="$(uname -m)"   # arm64 or x86_64
 echo "==> Compiling Swift sources (${ARCH})"
+
+# Apple Intelligence (FoundationModels) is weak-linked when the SDK has it, so
+# the app still launches on macOS 13 and still builds against older SDKs.
+FM_FLAGS=""
+if [ -d "$(xcrun --show-sdk-path)/System/Library/Frameworks/FoundationModels.framework" ]; then
+  FM_FLAGS="-Xfrontend -disable-autolink-framework -Xfrontend FoundationModels -Xlinker -weak_framework -Xlinker FoundationModels"
+fi
+
 swiftc -O \
   "${SRC}"/*.swift \
   -o "${OUT}/Contents/MacOS/${APP_NAME}" \
   -target "${ARCH}-apple-macos${MIN_MACOS}" \
   -framework SwiftUI -framework AppKit -framework Carbon \
-  -framework Cocoa -framework UniformTypeIdentifiers -framework Vision
+  -framework Cocoa -framework UniformTypeIdentifiers -framework Vision \
+  ${FM_FLAGS}
 
 echo "==> Building app icon (.icns)"
 ICONSET_SRC="${SRC}/Assets.xcassets/AppIcon.appiconset"

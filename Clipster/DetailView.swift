@@ -164,10 +164,8 @@ struct DetailView: View {
     private var aiTextSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             sectionTitle(item.type == .image ? "AI actions on extracted text" : "AI actions")
-            if !config.enabled {
-                aiSetupHint("Local AI actions are disabled.")
-            } else if config.textModel.isEmpty {
-                aiSetupHint("No text model selected.")
+            if let hint = config.textSetupHint {
+                aiSetupHint(hint)
             } else {
                 aiActionButtons
                 customInstructionRow
@@ -237,10 +235,8 @@ struct DetailView: View {
     private var analyzeImageSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             sectionTitle("Analyze image")
-            if !config.enabled {
-                aiSetupHint("Local AI actions are disabled.")
-            } else if config.visionModel.isEmpty {
-                aiSetupHint("No vision-capable model selected. Image analysis needs a local vision model (e.g. qwen2.5vl or llava).")
+            if let hint = config.visionSetupHint {
+                aiSetupHint(hint)
             } else {
                 HStack {
                     TextField("Question about the image", text: $analysisPrompt)

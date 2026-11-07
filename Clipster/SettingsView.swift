@@ -171,7 +171,23 @@ struct AISettingsTab: View {
     var body: some View {
         Form {
             Toggle("Enable local AI actions", isOn: $config.enabled)
-            Text("AI actions run on demand against a local model server (Ollama). Nothing is sent anywhere until you explicitly run an action, and only the selected item's content is sent — never the whole history.")
+            Text("AI actions run on demand and fully on this Mac. Nothing is sent anywhere until you explicitly run an action, and only the selected item's content is sent — never the whole history.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("Text actions run on", selection: $config.providerRaw) {
+                Text("Apple Intelligence (built-in)").tag(AITextProvider.apple.rawValue)
+                Text("Local server (Ollama)").tag(AITextProvider.ollama.rawValue)
+            }
+            .pickerStyle(.radioGroup)
+            if config.provider == .apple {
+                Text(AppleFMBridge.statusDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+            Text("Local server — used for text actions when selected above, and always for image analysis (the Apple model cannot see images).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
