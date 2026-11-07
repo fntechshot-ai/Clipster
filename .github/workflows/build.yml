@@ -19,6 +19,9 @@ jobs:
       - name: Show toolchain
         run: swift --version
 
+      - name: Run tests
+        run: ./run_tests.sh
+
       - name: Build Clipster.app (no Xcode)
         run: ./build_noxcode.sh
 

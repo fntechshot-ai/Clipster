@@ -17,12 +17,11 @@ mkdir -p "${OUT}/Contents/MacOS" "${OUT}/Contents/Resources" buildtmp
 ARCH="$(uname -m)"   # arm64 or x86_64
 echo "==> Compiling Swift sources (${ARCH})"
 swiftc -O \
-  "${SRC}/ClipsterApp.swift" "${SRC}/ClipboardManager.swift" \
-  "${SRC}/ContentView.swift" "${SRC}/HotKey.swift" \
+  "${SRC}"/*.swift \
   -o "${OUT}/Contents/MacOS/${APP_NAME}" \
   -target "${ARCH}-apple-macos${MIN_MACOS}" \
   -framework SwiftUI -framework AppKit -framework Carbon \
-  -framework Cocoa -framework UniformTypeIdentifiers
+  -framework Cocoa -framework UniformTypeIdentifiers -framework Vision
 
 echo "==> Building app icon (.icns)"
 ICONSET_SRC="${SRC}/Assets.xcassets/AppIcon.appiconset"

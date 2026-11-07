@@ -3,11 +3,29 @@ import AppKit
 import UniformTypeIdentifiers
 import Carbon.HIToolbox
 
+extension Notification.Name {
+    static let clipsterPasteNow = Notification.Name("clipsterPasteNow")
+    static let clipsterCaptureArea = Notification.Name("clipsterCaptureArea")
+    static let clipsterCaptureText = Notification.Name("clipsterCaptureText")
+    static let clipsterOpenSettings = Notification.Name("clipsterOpenSettings")
+}
+
 enum ClipType: String, Codable {
     case text = "TXT"
     case html = "HTML"
     case image = "IMG"
     case file = "FILE"
+}
+
+/// OCR lifecycle of an image item. `nil` on the item means "not processed".
+/// Only terminal states (.done, .noText, .failed) are meaningful after a relaunch;
+/// transient states found on disk are discarded at load time.
+enum OCRStatus: String, Codable {
+    case queued
+    case processing
+    case done
+    case noText
+    case failed
 }
 
 struct ClipItem: Identifiable, Codable, Equatable {
@@ -20,6 +38,14 @@ struct ClipItem: Identifiable, Codable, Equatable {
     var imagePNG: Data?
     var files: [String]?
 
+    // OCR fields — all optional so pre-OCR history files keep loading.
+    var ocrText: String?
+    var ocrStatus: OCRStatus?
+    var ocrDate: Date?
+    var ocrEngine: Int?
+    var ocrError: String?
+
+    // Equality is content-based (used for de-duplication), so OCR state is excluded.
     static func == (lhs: ClipItem, rhs: ClipItem) -> Bool {
         lhs.type == rhs.type &&
         lhs.text == rhs.text &&
@@ -32,6 +58,13 @@ struct ClipItem: Identifiable, Codable, Equatable {
 final class ClipboardManager: ObservableObject {
     @Published private(set) var items: [ClipItem] = []
     @Published var query: String = ""
+
+    /// When set, ContentView shows the detail panel for this item.
+    @Published var detailItemID: UUID?
+    /// AI action the detail panel should start automatically (set from context menus).
+    @Published var pendingAIAction: AIAction?
+
+    let ocr = OCRService()
 
     private let defaults = UserDefaults.standard
 
@@ -46,6 +79,10 @@ final class ClipboardManager: ObservableObject {
     @Published var ignorePasswords: Bool = false {
         didSet { defaults.set(ignorePasswords, forKey: "ignorePasswords") }
     }
+    /// Automatically run OCR on newly captured images.
+    @Published var autoOCR: Bool = true {
+        didSet { defaults.set(autoOCR, forKey: "autoOCR") }
+    }
 
     /// Skip images larger than this so history.json doesn't balloon.
     private let maxImageBytes = 8 * 1024 * 1024
@@ -53,16 +90,25 @@ final class ClipboardManager: ObservableObject {
     /// Pasteboard type used by password managers to mark sensitive content.
     private let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
 
-    private let pb = NSPasteboard.general
+    private let pb: NSPasteboard
     private var lastChangeCount: Int = 0
     private var timer: Timer?
 
-    private lazy var storeURL: URL = {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let appDir = dir.appendingPathComponent("Clipster", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-        return appDir.appendingPathComponent("history.json")
-    }()
+    private let storeURL: URL
+
+    /// `pasteboard` and `storeURL` are injectable for tests; defaults are the real ones.
+    init(pasteboard: NSPasteboard = .general, storeURL: URL? = nil) {
+        self.pb = pasteboard
+        if let storeURL {
+            self.storeURL = storeURL
+        } else {
+            let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            let appDir = dir.appendingPathComponent("Clipster", isDirectory: true)
+            try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+            self.storeURL = appDir.appendingPathComponent("history.json")
+        }
+        ocr.manager = self
+    }
 
     func start() {
         loadSettings()
@@ -77,9 +123,10 @@ final class ClipboardManager: ObservableObject {
         if defaults.object(forKey: "isCapturing") != nil { isCapturing = defaults.bool(forKey: "isCapturing") }
         if defaults.object(forKey: "maxItems") != nil { maxItems = defaults.integer(forKey: "maxItems") }
         if defaults.object(forKey: "ignorePasswords") != nil { ignorePasswords = defaults.bool(forKey: "ignorePasswords") }
+        if defaults.object(forKey: "autoOCR") != nil { autoOCR = defaults.bool(forKey: "autoOCR") }
     }
 
-    private func tick() {
+    func tick() {
         guard isCapturing else { return }
         guard pb.changeCount != lastChangeCount else { return }
         lastChangeCount = pb.changeCount
@@ -111,34 +158,169 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-    private func append(_ item: ClipItem) {
-        DispatchQueue.main.async {
-            if let first = self.items.first, first == item { return }
-            self.items.insert(item, at: 0)
-            if self.items.count > self.maxItems {
-                self.items.removeLast(self.items.count - self.maxItems)
-            }
-            self.save()
+    /// Inserts an item at the top (de-duplicating against the current top item)
+    /// and returns the id of the effective item. Must be called on the main thread.
+    @discardableResult
+    func append(_ item: ClipItem) -> UUID {
+        if let first = items.first, first == item { return first.id }
+        items.insert(item, at: 0)
+        if items.count > maxItems {
+            let removed = items.suffix(items.count - maxItems)
+            for r in removed { ocr.cancel(r.id) }
+            items.removeLast(items.count - maxItems)
         }
+        save()
+        // Capture Text items arrive with OCR already attached — don't redo them.
+        if item.type == .image && autoOCR && item.ocrStatus == nil {
+            ocr.enqueue(item.id)
+        }
+        return item.id
     }
+
+    // MARK: - Lookup
+
+    func item(_ id: UUID) -> ClipItem? {
+        items.first(where: { $0.id == id })
+    }
+
+    func imageData(for id: UUID) -> Data? {
+        item(id)?.imagePNG
+    }
+
+    /// Image items that still need OCR with the current engine (used by backfill).
+    func imageItemsNeedingOCR(engine: Int) -> [UUID] {
+        items.filter { item in
+            guard item.type == .image, item.imagePNG != nil else { return false }
+            switch item.ocrStatus {
+            case .done, .noText:
+                return (item.ocrEngine ?? 0) < engine
+            case .failed, .queued, .processing, nil:
+                // failed items are retried explicitly by backfill; transient states requeue
+                return item.ocrStatus != .queued && item.ocrStatus != .processing
+            }
+        }.map { $0.id }
+    }
+
+    // MARK: - OCR state updates (called by OCRService on the main thread)
+
+    /// Transient status update (queued/processing). Not persisted — a relaunch resets it.
+    func setOCRTransientStatus(_ id: UUID, _ status: OCRStatus?) {
+        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
+        items[idx].ocrStatus = status
+    }
+
+    /// Terminal OCR result. Persisted.
+    func applyOCRResult(_ id: UUID, text: String?, errorCategory: String?) {
+        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
+        if let errorCategory {
+            items[idx].ocrStatus = .failed
+            items[idx].ocrError = errorCategory
+            items[idx].ocrText = nil
+        } else if let text, !text.isEmpty {
+            items[idx].ocrStatus = .done
+            items[idx].ocrText = text
+            items[idx].ocrError = nil
+        } else {
+            items[idx].ocrStatus = .noText
+            items[idx].ocrText = nil
+            items[idx].ocrError = nil
+        }
+        items[idx].ocrDate = Date()
+        items[idx].ocrEngine = OCRService.engineVersion
+        save()
+    }
+
+    // MARK: - Search
 
     var orderedItems: [ClipItem] {
         let base = items
         let filtered: [ClipItem]
-        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
             filtered = base
         } else {
-            filtered = base.filter { item in
-                if let t = item.text, t.localizedCaseInsensitiveContains(query) { return true }
-                if let h = item.html, h.localizedCaseInsensitiveContains(query) { return true }
-                if let f = item.files?.joined(separator: " "), f.localizedCaseInsensitiveContains(query) { return true }
-                return false
-            }
+            filtered = base.filter { Self.matches($0, query: trimmed) }
         }
         return filtered.sorted { (a, b) -> Bool in
             if a.pinned != b.pinned { return a.pinned && !b.pinned }
             return a.date > b.date
         }
+    }
+
+    /// Case- and diacritic-insensitive containment check.
+    static func textMatches(_ haystack: String?, _ query: String) -> Bool {
+        guard let haystack, !haystack.isEmpty else { return false }
+        return haystack.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    static func matches(_ item: ClipItem, query: String) -> Bool {
+        if textMatches(item.text, query) { return true }
+        if textMatches(item.html, query) { return true }
+        if let f = item.files?.joined(separator: " "), textMatches(f, query) { return true }
+        if textMatches(item.ocrText, query) { return true }
+        return false
+    }
+
+    /// Short context snippet around the first match of `query` in `text`, for search results.
+    static func snippet(of text: String, matching query: String, context: Int = 24) -> String? {
+        guard let r = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) else { return nil }
+        let start = text.index(r.lowerBound, offsetBy: -context, limitedBy: text.startIndex) ?? text.startIndex
+        let end = text.index(r.upperBound, offsetBy: context, limitedBy: text.endIndex) ?? text.endIndex
+        var s = String(text[start..<end]).replacingOccurrences(of: "\n", with: " ")
+        if start > text.startIndex { s = "…" + s }
+        if end < text.endIndex { s += "…" }
+        return s
+    }
+
+    // MARK: - Pasteboard writes initiated by Clipster
+
+    /// Marks the current pasteboard generation as self-induced so the watcher
+    /// does not re-capture content Clipster itself just wrote.
+    private func suppressWatcherForCurrentChange() {
+        lastChangeCount = pb.changeCount
+    }
+
+    /// Puts captured image data on the clipboard and (unless history is paused)
+    /// stores it once in history. Returns the history item id, or nil when paused.
+    @discardableResult
+    func storeCapturedImage(_ png: Data) -> UUID? {
+        pb.clearContents()
+        pb.declareTypes([.png, .tiff], owner: nil)
+        pb.setData(png, forType: .png)
+        if let tiff = NSImage(data: png)?.tiffRepresentation {
+            pb.setData(tiff, forType: .tiff)
+        }
+        suppressWatcherForCurrentChange()
+
+        guard isCapturing else { return nil }
+        let item = ClipItem(id: UUID(), pinned: false, date: Date(), type: .image,
+                            text: nil, html: nil, imagePNG: png, files: nil)
+        return append(item)
+    }
+
+    /// Puts recognized text on the clipboard and (unless history is paused) stores
+    /// the source image once in history with its OCR text already attached.
+    @discardableResult
+    func storeCapturedText(_ text: String, sourcePNG: Data) -> UUID? {
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        suppressWatcherForCurrentChange()
+
+        guard isCapturing else { return nil }
+        var item = ClipItem(id: UUID(), pinned: false, date: Date(), type: .image,
+                            text: nil, html: nil, imagePNG: sourcePNG, files: nil)
+        item.ocrText = text
+        item.ocrStatus = .done
+        item.ocrDate = Date()
+        item.ocrEngine = OCRService.engineVersion
+        return append(item)
+    }
+
+    /// Copies a string without pasting (used by "Copy Text" / "Copy Result").
+    /// The new clipboard content is captured into history like any user copy.
+    func copyString(_ text: String) {
+        pb.clearContents()
+        pb.setString(text, forType: .string)
     }
 
     func paste(_ item: ClipItem, plainText: Bool) {
@@ -180,7 +362,6 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-
     func togglePin(_ item: ClipItem) {
         if let idx = items.firstIndex(where: { $0.id == item.id }) {
             items[idx].pinned.toggle()
@@ -191,6 +372,8 @@ final class ClipboardManager: ObservableObject {
 
     func delete(_ item: ClipItem) {
         if let idx = items.firstIndex(where: { $0.id == item.id }) {
+            ocr.cancel(item.id)
+            if detailItemID == item.id { detailItemID = nil }
             items.remove(at: idx)
             save()
             objectWillChange.send()
@@ -198,12 +381,14 @@ final class ClipboardManager: ObservableObject {
     }
 
     func clearUnpinned() {
+        for it in items where !it.pinned { ocr.cancel(it.id) }
+        if let d = detailItemID, let it = item(d), !it.pinned { detailItemID = nil }
         items.removeAll(where: { !$0.pinned })
         save()
         objectWillChange.send()
     }
 
-    private func save() {
+    func save() {
         do {
             let data = try JSONEncoder().encode(items)
             try data.write(to: storeURL, options: .atomic)
@@ -212,10 +397,17 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-    private func load() {
+    func load() {
         guard let data = try? Data(contentsOf: storeURL),
               let arr = try? JSONDecoder().decode([ClipItem].self, from: data) else { return }
-        items = arr
+        // Transient OCR states must not survive a relaunch as stuck work.
+        items = arr.map { item in
+            var item = item
+            if item.ocrStatus == .queued || item.ocrStatus == .processing {
+                item.ocrStatus = nil
+            }
+            return item
+        }
     }
 
     private func nsImageToPNG(_ image: NSImage) -> Data? {
@@ -225,7 +417,7 @@ final class ClipboardManager: ObservableObject {
         return rep.representation(using: .png, properties: [:])
     }
 
-    private func htmlToPlainText(_ html: String) -> String {
+    func htmlToPlainText(_ html: String) -> String {
         guard let data = html.data(using: .utf8) else { return html }
         if let att = try? NSAttributedString(data: data,
                                              options: [.documentType: NSAttributedString.DocumentType.html,
@@ -234,14 +426,5 @@ final class ClipboardManager: ObservableObject {
             return att.string
         }
         return html
-    }
-    private func simulatePasteKeystroke() {
-        let src = CGEventSource(stateID: .combinedSessionState)
-        let cmdDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true)
-        cmdDown?.flags = .maskCommand
-        let cmdUp = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
-        cmdUp?.flags = .maskCommand
-        cmdDown?.post(tap: .cgAnnotatedSessionEventTap)
-        cmdUp?.post(tap: .cgAnnotatedSessionEventTap)
     }
 }
