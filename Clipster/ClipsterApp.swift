@@ -140,8 +140,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func captureAreaNotification() { captureArea() }
     @objc private func captureTextNotification() { captureText() }
 
+    /// The app being captured, best effort: the frontmost app when the capture
+    /// was invoked, or — when that is Clipster itself (popover button) — the app
+    /// that was active before the popover opened. Unknown when undeterminable.
+    private func captureSourceApp() -> (name: String?, bundleID: String?) {
+        var app = NSWorkspace.shared.frontmostApplication
+        if app?.bundleIdentifier == ClipboardManager.selfBundleID {
+            app = lastActiveApp
+        }
+        guard let app, app.bundleIdentifier != ClipboardManager.selfBundleID else { return (nil, nil) }
+        return (app.localizedName, app.bundleIdentifier)
+    }
+
     /// Capture a screen selection as an image: clipboard + one history item.
     func captureArea() {
+        let source = captureSourceApp()
         hideUIThen { [weak self] in
             CaptureService.shared.captureInteractive { outcome in
                 guard let self else { return }
@@ -151,7 +164,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .failed(let message):
                     self.showCaptureFailure(message)
                 case .image(let png):
-                    let id = self.manager.storeCapturedImage(png)
+                    let id = self.manager.storeCapturedImage(png, sourceAppName: source.name,
+                                                             sourceBundleID: source.bundleID)
                     if id != nil {
                         CaptureHUD.show(symbol: "checkmark.circle",
                                         title: "Image copied to clipboard",
@@ -169,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Capture a screen selection as text: OCR in memory first, then commit
     /// text to the clipboard and the source image (once) to history.
     func captureText() {
+        let source = captureSourceApp()
         hideUIThen { [weak self] in
             CaptureService.shared.captureInteractive { outcome in
                 guard let self else { return }
@@ -181,7 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     DispatchQueue.global(qos: .userInitiated).async {
                         let result = OCRService.recognize(pngData: png)
                         DispatchQueue.main.async {
-                            self.finishCaptureText(result, png: png)
+                            self.finishCaptureText(result, png: png, source: source)
                         }
                     }
                 }
@@ -189,10 +204,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func finishCaptureText(_ result: OCRService.RecognitionResult, png: Data) {
+    private func finishCaptureText(_ result: OCRService.RecognitionResult, png: Data,
+                                   source: (name: String?, bundleID: String?)) {
         switch result {
         case .text(let text):
-            let id = manager.storeCapturedText(text, sourcePNG: png)
+            let id = manager.storeCapturedText(text, sourcePNG: png,
+                                               sourceAppName: source.name, sourceBundleID: source.bundleID)
             let preview = text.replacingOccurrences(of: "\n", with: " ")
             if let id {
                 CaptureHUD.show(symbol: "text.viewfinder",

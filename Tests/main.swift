@@ -305,9 +305,15 @@ test("re-copying through Clipster preserves the original source; Clipster output
            "Clipster-generated output attributed to Clipster")
     expect(m.items.first?.sourceBundleID == ClipboardManager.selfBundleID, "Clipster bundle id recorded")
 
-    let capID = m.storeCapturedImage(makeBlankImagePNG())
-    expect(capID.flatMap { m.item($0) }?.sourceAppName == ClipboardManager.selfSourceName,
-           "screen captures tracked as Clipster-generated")
+    // Screen captures are attributed to the app being captured (passed by the
+    // capture flow), falling back to unknown — never to Clipster.
+    let capID = m.storeCapturedImage(makeBlankImagePNG(), sourceAppName: "Safari",
+                                     sourceBundleID: "com.apple.Safari")
+    expect(capID.flatMap { m.item($0) }?.sourceAppName == "Safari",
+           "capture attributed to the captured app")
+    let capText = m.storeCapturedText("words", sourcePNG: makeTextImagePNG("x"))
+    expect(capText.flatMap { m.item($0) }?.sourceAppName == nil,
+           "capture with no determinable app stays unknown")
 }
 
 test("stale self-attribution is discarded when another write lands in between") {

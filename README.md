@@ -3,7 +3,7 @@
 A lightweight macOS **menu bar clipboard history** app, written in Swift + SwiftUI.
 
 - 📋 Keeps a searchable history of what you copy (text, HTML, images, files)
-- 🏷️ **Source app** recorded per item (icon + name, best effort) — searchable and filterable; items re-copied through Clipster keep their original source, and Clipster's own output (captures, OCR copies, AI results) is tracked as Clipster
+- 🏷️ **Source app** recorded per item (icon + name, best effort) — searchable and filterable; items re-copied through Clipster keep their original source, screen captures are attributed to the app on screen, and Clipster's own text output (OCR copies, AI results) is tracked as Clipster
 - 🔎 **OCR**: text in copied images is recognized locally (Apple Vision) and becomes **searchable**
 - 📸 **Capture Area** (⌥⌘4): select a screen region → image lands on the clipboard + history
 - 📝 **Capture Text** (⌥⌘5): select a screen region → its **text** lands on the clipboard, ready to paste
@@ -89,7 +89,9 @@ metadata (`org.nspasteboard.source`) when the copying app provides it,
 otherwise the app active when the change was detected (best effort). Universal
 Clipboard content shows as "Another device", and anything unreliable — rapid
 app switching, background writes — is left as an unknown source rather than
-guessed. Items that existed before this feature stay unknown; their origins
+guessed. Screen captures are attributed to the app that was frontmost when you
+invoked the capture (a selection spanning several windows gets the frontmost
+one). Items that existed before this feature stay unknown; their origins
 are never invented. App icons are resolved locally and all metadata stays on
 your Mac.
 

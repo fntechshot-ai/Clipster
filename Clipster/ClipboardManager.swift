@@ -399,9 +399,12 @@ final class ClipboardManager: ObservableObject {
     }
 
     /// Puts captured image data on the clipboard and (unless history is paused)
-    /// stores it once in history. Returns the history item id, or nil when paused.
+    /// stores it once in history, attributed to the app that was on screen when
+    /// the capture was invoked (best effort; unknown when undeterminable).
+    /// Returns the history item id, or nil when paused.
     @discardableResult
-    func storeCapturedImage(_ png: Data) -> UUID? {
+    func storeCapturedImage(_ png: Data,
+                            sourceAppName: String? = nil, sourceBundleID: String? = nil) -> UUID? {
         pb.clearContents()
         pb.declareTypes([.png, .tiff], owner: nil)
         pb.setData(png, forType: .png)
@@ -413,14 +416,16 @@ final class ClipboardManager: ObservableObject {
         guard isCapturing else { return nil }
         let item = ClipItem(id: UUID(), pinned: false, date: Date(), type: .image,
                             text: nil, html: nil, imagePNG: png, files: nil,
-                            sourceAppName: Self.selfSourceName, sourceBundleID: Self.selfBundleID)
+                            sourceAppName: sourceAppName, sourceBundleID: sourceBundleID)
         return append(item)
     }
 
     /// Puts recognized text on the clipboard and (unless history is paused) stores
-    /// the source image once in history with its OCR text already attached.
+    /// the source image once in history with its OCR text already attached,
+    /// attributed like storeCapturedImage.
     @discardableResult
-    func storeCapturedText(_ text: String, sourcePNG: Data) -> UUID? {
+    func storeCapturedText(_ text: String, sourcePNG: Data,
+                           sourceAppName: String? = nil, sourceBundleID: String? = nil) -> UUID? {
         pb.clearContents()
         pb.setString(text, forType: .string)
         suppressWatcherForCurrentChange()
@@ -428,7 +433,7 @@ final class ClipboardManager: ObservableObject {
         guard isCapturing else { return nil }
         var item = ClipItem(id: UUID(), pinned: false, date: Date(), type: .image,
                             text: nil, html: nil, imagePNG: sourcePNG, files: nil,
-                            sourceAppName: Self.selfSourceName, sourceBundleID: Self.selfBundleID)
+                            sourceAppName: sourceAppName, sourceBundleID: sourceBundleID)
         item.ocrText = text
         item.ocrStatus = .done
         item.ocrDate = Date()
