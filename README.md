@@ -3,6 +3,7 @@
 A lightweight macOS **menu bar clipboard history** app, written in Swift + SwiftUI.
 
 - 📋 Keeps a searchable history of what you copy (text, HTML, images, files)
+- 🏷️ **Source app** recorded per item (icon + name, best effort) — searchable and filterable; items re-copied through Clipster keep their original source, and Clipster's own output (captures, OCR copies, AI results) is tracked as Clipster
 - 🔎 **OCR**: text in copied images is recognized locally (Apple Vision) and becomes **searchable**
 - 📸 **Capture Area** (⌥⌘4): select a screen region → image lands on the clipboard + history
 - 📝 **Capture Text** (⌥⌘5): select a screen region → its **text** lands on the clipboard, ready to paste
@@ -11,6 +12,7 @@ A lightweight macOS **menu bar clipboard history** app, written in Swift + Swift
 - 🔤 **Paste as Plain Text**
 - 🖼️ Thumbnails & type badges (TXT / HTML / IMG / FILE)
 - ⌥⌘V global hotkey to open the history popover; capture shortcuts are configurable in Settings → Capture
+- ⌨️ Keyboard-first popover: type to search, ↑/↓ to select, **↩ paste** (⌥↩ plain text), **⌘1–⌘4** paste the top items, ⌘⌫ delete, Esc clears the search then closes
 - 🔒 Optional "Ignore passwords" mode that skips items marked as concealed by password managers
 - 💾 History persists locally in `~/Library/Application Support/Clipster/history.json`
 
@@ -79,6 +81,17 @@ native selection UI, Retina and multi-display handling all behave like ⇧⌘4):
 Clipboard OCR never needs Screen Recording permission — only the capture
 commands do. Captures never create files on your Desktop; they go straight to
 the clipboard and history.
+
+## Source attribution
+
+Each new item records which app it was copied from: explicit pasteboard
+metadata (`org.nspasteboard.source`) when the copying app provides it,
+otherwise the app active when the change was detected (best effort). Universal
+Clipboard content shows as "Another device", and anything unreliable — rapid
+app switching, background writes — is left as an unknown source rather than
+guessed. Items that existed before this feature stay unknown; their origins
+are never invented. App icons are resolved locally and all metadata stays on
+your Mac.
 
 ## OCR (text in images)
 

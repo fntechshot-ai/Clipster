@@ -235,6 +235,125 @@ test("paused history: capture writes the clipboard but stores nothing") {
     expect(pb.string(forType: .string) == "abc", "paused: text still on clipboard")
 }
 
+// MARK: - Source attribution
+
+test("new items are attributed to the frontmost app, never to Clipster itself") {
+    let pb = NSPasteboard(name: NSPasteboard.Name("com.francisconeto.Clipster.tests.attr"))
+    let m = ClipboardManager(pasteboard: pb, storeURL: tmpBase.appendingPathComponent("attr.json"))
+    m.frontmostAppProvider = { ("Safari", "com.apple.Safari") }
+
+    pb.clearContents()
+    pb.setString("copied in safari", forType: .string)
+    m.tick()
+    expect(m.items.first?.sourceAppName == "Safari", "frontmost app name recorded")
+    expect(m.items.first?.sourceBundleID == "com.apple.Safari", "frontmost bundle id recorded")
+
+    // When Clipster itself is frontmost and the write wasn't ours → unknown.
+    m.frontmostAppProvider = { ("Clipster", ClipboardManager.selfBundleID) }
+    pb.clearContents()
+    pb.setString("mystery write", forType: .string)
+    m.tick()
+    expect(m.items.first?.sourceAppName == nil && m.items.first?.sourceBundleID == nil,
+           "unattributable write while Clipster frontmost → unknown source")
+}
+
+test("explicit org.nspasteboard.source metadata is preferred over the frontmost app") {
+    let pb = NSPasteboard(name: NSPasteboard.Name("com.francisconeto.Clipster.tests.attr2"))
+    let m = ClipboardManager(pasteboard: pb, storeURL: tmpBase.appendingPathComponent("attr2.json"))
+    m.frontmostAppProvider = { ("WrongApp", "com.wrong.app") }
+
+    pb.clearContents()
+    pb.setString("from a well-behaved app", forType: .string)
+    pb.setString("com.apple.finder", forType: NSPasteboard.PasteboardType("org.nspasteboard.source"))
+    m.tick()
+    expect(m.items.first?.sourceBundleID == "com.apple.finder", "explicit bundle id wins")
+    expect(m.items.first?.sourceAppName != nil && m.items.first?.sourceAppName != "WrongApp",
+           "name resolved locally from the bundle id, got \(m.items.first?.sourceAppName ?? "nil")")
+}
+
+test("Universal Clipboard content is marked as coming from another device") {
+    let pb = NSPasteboard(name: NSPasteboard.Name("com.francisconeto.Clipster.tests.attr3"))
+    let m = ClipboardManager(pasteboard: pb, storeURL: tmpBase.appendingPathComponent("attr3.json"))
+    m.frontmostAppProvider = { ("SomeApp", "com.some.app") }
+
+    pb.clearContents()
+    pb.setString("came from the iPhone", forType: .string)
+    pb.setData(Data(), forType: NSPasteboard.PasteboardType("com.apple.is-remote-clipboard"))
+    m.tick()
+    expect(m.items.first?.sourceAppName == "Another device", "remote marker → Another device")
+    expect(m.items.first?.sourceBundleID == nil, "no bundle id for cross-device copies")
+}
+
+test("re-copying through Clipster preserves the original source; Clipster output is tracked as Clipster") {
+    let pb = NSPasteboard(name: NSPasteboard.Name("com.francisconeto.Clipster.tests.attr4"))
+    let m = ClipboardManager(pasteboard: pb, storeURL: tmpBase.appendingPathComponent("attr4.json"))
+    m.frontmostAppProvider = { ("ActiveApp", "com.active.app") }
+
+    var original = textItem("original content")
+    original.sourceAppName = "Figma"
+    original.sourceBundleID = "com.figma.Desktop"
+    m.append(original)
+
+    m.paste(original, plainText: false)
+    m.tick()
+    expect(m.items.first?.text == "original content", "pasted item re-captured on top")
+    expect(m.items.first?.sourceAppName == "Figma", "original source preserved through paste, got \(m.items.first?.sourceAppName ?? "nil")")
+
+    m.copyString("ocr or ai output")
+    m.tick()
+    expect(m.items.first?.sourceAppName == ClipboardManager.selfSourceName,
+           "Clipster-generated output attributed to Clipster")
+    expect(m.items.first?.sourceBundleID == ClipboardManager.selfBundleID, "Clipster bundle id recorded")
+
+    let capID = m.storeCapturedImage(makeBlankImagePNG())
+    expect(capID.flatMap { m.item($0) }?.sourceAppName == ClipboardManager.selfSourceName,
+           "screen captures tracked as Clipster-generated")
+}
+
+test("stale self-attribution is discarded when another write lands in between") {
+    let pb = NSPasteboard(name: NSPasteboard.Name("com.francisconeto.Clipster.tests.attr5"))
+    let m = ClipboardManager(pasteboard: pb, storeURL: tmpBase.appendingPathComponent("attr5.json"))
+    m.frontmostAppProvider = { ("Mail", "com.apple.mail") }
+
+    var original = textItem("mine")
+    original.sourceAppName = "Figma"
+    m.append(original)
+    m.paste(original, plainText: false)      // records pending attribution
+    pb.clearContents()
+    pb.setString("external copy raced in", forType: .string) // bumps change count
+    m.tick()
+    expect(m.items.first?.text == "external copy raced in", "external content captured")
+    expect(m.items.first?.sourceAppName == "Mail",
+           "stale pending attribution discarded; frontmost used, got \(m.items.first?.sourceAppName ?? "nil")")
+}
+
+test("search covers app names; source and type filters narrow the list") {
+    let m = freshManager()
+    var a = textItem("hello from safari"); a.sourceAppName = "Safari"; a.sourceBundleID = "com.apple.Safari"
+    var b = textItem("terminal output");   b.sourceAppName = "Terminal"; b.sourceBundleID = "com.apple.Terminal"
+    let c = ClipItem(id: UUID(), pinned: true, date: Date(), type: .image,
+                     text: nil, html: nil, imagePNG: makeBlankImagePNG(), files: nil)
+    m.append(a); m.append(b); m.append(c)
+
+    m.query = "safari"
+    expect(m.orderedItems.map(\.id) == [a.id], "search matches the source app name")
+    m.query = ""
+
+    m.sourceFilter = "Terminal"
+    expect(m.orderedItems.map(\.id) == [b.id], "source filter narrows to that app")
+    m.sourceFilter = nil
+
+    m.typeFilter = .images
+    expect(m.orderedItems.map(\.id) == [c.id], "type filter: images")
+    m.typeFilter = .pinned
+    expect(m.orderedItems.map(\.id) == [c.id], "type filter: pinned")
+    m.typeFilter = .text
+    expect(m.orderedItems.count == 2, "type filter: text covers TXT and HTML")
+    m.typeFilter = .all
+
+    expect(m.availableSources == ["Safari", "Terminal"], "distinct sources listed alphabetically")
+}
+
 // MARK: - OCR recognition (real Vision)
 
 test("Vision OCR recognizes rendered text") {

@@ -8,6 +8,8 @@ extension Notification.Name {
     static let clipsterCaptureArea = Notification.Name("clipsterCaptureArea")
     static let clipsterCaptureText = Notification.Name("clipsterCaptureText")
     static let clipsterOpenSettings = Notification.Name("clipsterOpenSettings")
+    static let clipsterPopoverOpened = Notification.Name("clipsterPopoverOpened")
+    static let clipsterClosePopover = Notification.Name("clipsterClosePopover")
 }
 
 enum ClipType: String, Codable {
@@ -45,6 +47,13 @@ struct ClipItem: Identifiable, Codable, Equatable {
     var ocrEngine: Int?
     var ocrError: String?
 
+    // Source application the content was copied from. Both nil means unknown
+    // (including all items recorded before provenance existed — their origins
+    // are never invented). Clipster-generated items (captures, OCR copies,
+    // AI results) carry Clipster's own bundle id.
+    var sourceAppName: String? = nil
+    var sourceBundleID: String? = nil
+
     // Equality is content-based (used for de-duplication), so OCR state is excluded.
     static func == (lhs: ClipItem, rhs: ClipItem) -> Bool {
         lhs.type == rhs.type &&
@@ -55,9 +64,31 @@ struct ClipItem: Identifiable, Codable, Equatable {
     }
 }
 
+/// List filter applied by the chip shelf, combined with search and source filter.
+enum ClipTypeFilter: String, CaseIterable {
+    case all = "All"
+    case pinned = "Pinned"
+    case text = "Text"
+    case images = "Images"
+    case files = "Files"
+
+    func matches(_ item: ClipItem) -> Bool {
+        switch self {
+        case .all: return true
+        case .pinned: return item.pinned
+        case .text: return item.type == .text || item.type == .html
+        case .images: return item.type == .image
+        case .files: return item.type == .file
+        }
+    }
+}
+
 final class ClipboardManager: ObservableObject {
     @Published private(set) var items: [ClipItem] = []
     @Published var query: String = ""
+    @Published var typeFilter: ClipTypeFilter = .all
+    /// Source-app name to filter by; nil shows every source.
+    @Published var sourceFilter: String?
 
     /// When set, ContentView shows the detail panel for this item.
     @Published var detailItemID: UUID?
@@ -89,6 +120,26 @@ final class ClipboardManager: ObservableObject {
 
     /// Pasteboard type used by password managers to mark sensitive content.
     private let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+    /// Explicit source metadata some apps attach (nspasteboard.org convention).
+    private let sourceType = NSPasteboard.PasteboardType("org.nspasteboard.source")
+    /// Marker macOS puts on Universal Clipboard content from another device.
+    private let remoteClipboardType = NSPasteboard.PasteboardType("com.apple.is-remote-clipboard")
+
+    static let selfBundleID = Bundle.main.bundleIdentifier ?? "com.francisconeto.Clipster"
+    static let selfSourceName = "Clipster"
+
+    /// Returns the app active right now; injectable so tests can control it.
+    /// The default reads NSWorkspace at change-detection time (best effort).
+    var frontmostAppProvider: () -> (name: String?, bundleID: String?) = {
+        let app = NSWorkspace.shared.frontmostApplication
+        return (app?.localizedName, app?.bundleIdentifier)
+    }
+
+    /// Origin recorded for the next self-induced pasteboard change, so items
+    /// re-copied through Clipster keep their original source and Clipster's own
+    /// output is tracked as Clipster-generated. Matched by change count and
+    /// discarded if anything else touched the pasteboard in between.
+    private var pendingAttribution: (changeCount: Int, name: String?, bundleID: String?)?
 
     private let pb: NSPasteboard
     private var lastChangeCount: Int = 0
@@ -97,15 +148,22 @@ final class ClipboardManager: ObservableObject {
     private let storeURL: URL
 
     /// `pasteboard` and `storeURL` are injectable for tests; defaults are the real ones.
+    /// A development build can also be pointed at an isolated store with
+    /// CLIPSTER_STORE_DIR, so it never touches the real history file.
     init(pasteboard: NSPasteboard = .general, storeURL: URL? = nil) {
         self.pb = pasteboard
         if let storeURL {
             self.storeURL = storeURL
         } else {
-            let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            let appDir = dir.appendingPathComponent("Clipster", isDirectory: true)
-            try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-            self.storeURL = appDir.appendingPathComponent("history.json")
+            let dir: URL
+            if let override = ProcessInfo.processInfo.environment["CLIPSTER_STORE_DIR"], !override.isEmpty {
+                dir = URL(fileURLWithPath: override, isDirectory: true)
+            } else {
+                dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("Clipster", isDirectory: true)
+            }
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            self.storeURL = dir.appendingPathComponent("history.json")
         }
         ocr.manager = self
     }
@@ -134,28 +192,88 @@ final class ClipboardManager: ObservableObject {
     }
 
     private func captureCurrent() {
+        // Resolve provenance for this pasteboard generation up front, so the
+        // pending self-attribution is consumed even when nothing is stored.
+        let source = attributionForCurrentChange()
+
         // Respect password managers that mark their clipboard entries as concealed.
         if ignorePasswords, let types = pb.types, types.contains(concealedType) {
             return
         }
 
         if let s = pb.string(forType: .string), !s.isEmpty {
-            append(.init(id: UUID(), pinned: false, date: Date(), type: .text, text: s, html: nil, imagePNG: nil, files: nil))
+            append(.init(id: UUID(), pinned: false, date: Date(), type: .text, text: s, html: nil, imagePNG: nil, files: nil,
+                         sourceAppName: source.name, sourceBundleID: source.bundleID))
             return
         }
         if let html = pb.string(forType: .html) {
-            append(.init(id: UUID(), pinned: false, date: Date(), type: .html, text: htmlToPlainText(html), html: html, imagePNG: nil, files: nil))
+            append(.init(id: UUID(), pinned: false, date: Date(), type: .html, text: htmlToPlainText(html), html: html, imagePNG: nil, files: nil,
+                         sourceAppName: source.name, sourceBundleID: source.bundleID))
             return
         }
         if let tiff = pb.data(forType: .tiff), let img = NSImage(data: tiff),
            let png = nsImageToPNG(img), png.count <= maxImageBytes {
-            append(.init(id: UUID(), pinned: false, date: Date(), type: .image, text: nil, html: nil, imagePNG: png, files: nil))
+            append(.init(id: UUID(), pinned: false, date: Date(), type: .image, text: nil, html: nil, imagePNG: png, files: nil,
+                         sourceAppName: source.name, sourceBundleID: source.bundleID))
             return
         }
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
-            append(.init(id: UUID(), pinned: false, date: Date(), type: .file, text: nil, html: nil, imagePNG: nil, files: urls.map { $0.absoluteString }))
+            append(.init(id: UUID(), pinned: false, date: Date(), type: .file, text: nil, html: nil, imagePNG: nil, files: urls.map { $0.absoluteString },
+                         sourceAppName: source.name, sourceBundleID: source.bundleID))
             return
         }
+    }
+
+    // MARK: - Source attribution
+
+    /// Decides where the current pasteboard content came from. Both fields nil
+    /// means "Unknown source" — preferred over guessing when attribution is
+    /// unreliable (rapid app switching, background writes, Clipster frontmost).
+    func attributionForCurrentChange() -> (name: String?, bundleID: String?) {
+        // 1. A write Clipster itself just made, carrying its recorded origin.
+        if let pending = pendingAttribution {
+            pendingAttribution = nil
+            if pending.changeCount == pb.changeCount {
+                return (pending.name, pending.bundleID)
+            }
+            // Something else wrote in between — fall through and re-resolve.
+        }
+        // 2. Explicit source metadata provided by the copying app.
+        if let bundleID = pb.string(forType: sourceType)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !bundleID.isEmpty {
+            return (Self.appName(forBundleID: bundleID) ?? bundleID, bundleID)
+        }
+        // 3. Universal Clipboard content copied on another device.
+        if pb.types?.contains(remoteClipboardType) == true {
+            return ("Another device", nil)
+        }
+        // 4. Best effort: the app active when the change was detected.
+        let front = frontmostAppProvider()
+        if let bid = front.bundleID, bid == Self.selfBundleID {
+            // A write landed while Clipster was frontmost that we didn't make
+            // ourselves — attribution would be a guess, so record none.
+            return (nil, nil)
+        }
+        return (front.name, front.bundleID)
+    }
+
+    /// Resolves a bundle identifier to a display name using local metadata only.
+    static func appName(forBundleID bundleID: String) -> String? {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
+        let bundle = Bundle(url: url)
+        let name = (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+        return name ?? url.deletingPathExtension().lastPathComponent
+    }
+
+    /// Distinct source-app names present in history, for the filter menu.
+    var availableSources: [String] {
+        var seen = Set<String>()
+        var names: [String] = []
+        for item in items {
+            if let n = item.sourceAppName, seen.insert(n).inserted { names.append(n) }
+        }
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     /// Inserts an item at the top (de-duplicating against the current top item)
@@ -233,13 +351,12 @@ final class ClipboardManager: ObservableObject {
     // MARK: - Search
 
     var orderedItems: [ClipItem] {
-        let base = items
-        let filtered: [ClipItem]
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            filtered = base
-        } else {
-            filtered = base.filter { Self.matches($0, query: trimmed) }
+        let filtered = items.filter { item in
+            guard typeFilter.matches(item) else { return false }
+            if let source = sourceFilter, item.sourceAppName != source { return false }
+            if !trimmed.isEmpty, !Self.matches(item, query: trimmed) { return false }
+            return true
         }
         return filtered.sorted { (a, b) -> Bool in
             if a.pinned != b.pinned { return a.pinned && !b.pinned }
@@ -258,6 +375,7 @@ final class ClipboardManager: ObservableObject {
         if textMatches(item.html, query) { return true }
         if let f = item.files?.joined(separator: " "), textMatches(f, query) { return true }
         if textMatches(item.ocrText, query) { return true }
+        if textMatches(item.sourceAppName, query) { return true }
         return false
     }
 
@@ -294,7 +412,8 @@ final class ClipboardManager: ObservableObject {
 
         guard isCapturing else { return nil }
         let item = ClipItem(id: UUID(), pinned: false, date: Date(), type: .image,
-                            text: nil, html: nil, imagePNG: png, files: nil)
+                            text: nil, html: nil, imagePNG: png, files: nil,
+                            sourceAppName: Self.selfSourceName, sourceBundleID: Self.selfBundleID)
         return append(item)
     }
 
@@ -308,7 +427,8 @@ final class ClipboardManager: ObservableObject {
 
         guard isCapturing else { return nil }
         var item = ClipItem(id: UUID(), pinned: false, date: Date(), type: .image,
-                            text: nil, html: nil, imagePNG: sourcePNG, files: nil)
+                            text: nil, html: nil, imagePNG: sourcePNG, files: nil,
+                            sourceAppName: Self.selfSourceName, sourceBundleID: Self.selfBundleID)
         item.ocrText = text
         item.ocrStatus = .done
         item.ocrDate = Date()
@@ -317,10 +437,12 @@ final class ClipboardManager: ObservableObject {
     }
 
     /// Copies a string without pasting (used by "Copy Text" / "Copy Result").
-    /// The new clipboard content is captured into history like any user copy.
+    /// The new clipboard content is captured into history like any user copy,
+    /// attributed to Clipster itself (it is Clipster-generated output).
     func copyString(_ text: String) {
         pb.clearContents()
         pb.setString(text, forType: .string)
+        pendingAttribution = (pb.changeCount, Self.selfSourceName, Self.selfBundleID)
     }
 
     func paste(_ item: ClipItem, plainText: Bool) {
@@ -354,6 +476,10 @@ final class ClipboardManager: ObservableObject {
                 }
             }
         }
+
+        // Re-copying through Clipster must preserve the item's original source;
+        // the watcher will apply it when it records the new top item.
+        pendingAttribution = (pb.changeCount, item.sourceAppName, item.sourceBundleID)
 
         // Ask the app to close the popover, refocus previous app, then press ⌘V.
         // Only do this for text/html, since other types (images/files) may not be pasteable via ⌘V.

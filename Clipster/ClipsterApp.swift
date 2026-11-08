@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Popover setup
-        popover.contentSize = NSSize(width: 460, height: 560)
+        popover.contentSize = NSSize(width: 400, height: 560)
         popover.behavior = .transient
         let host = NSViewController()
         host.view = NSHostingView(rootView: ContentView().environmentObject(manager))
@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         nc.addObserver(self, selector: #selector(captureAreaNotification), name: .clipsterCaptureArea, object: nil)
         nc.addObserver(self, selector: #selector(captureTextNotification), name: .clipsterCaptureText, object: nil)
         nc.addObserver(self, selector: #selector(openSettings), name: .clipsterOpenSettings, object: nil)
+        nc.addObserver(self, selector: #selector(closePopover), name: .clipsterClosePopover, object: nil)
     }
 
     // MARK: - Status item
@@ -117,7 +118,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastActiveApp = NSWorkspace.shared.frontmostApplication
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
+            // Lets the view reset selection and focus the search field.
+            NotificationCenter.default.post(name: .clipsterPopoverOpened, object: nil)
         }
+    }
+
+    @objc private func closePopover() {
+        popover.performClose(nil)
     }
 
     @objc func openSettings() {

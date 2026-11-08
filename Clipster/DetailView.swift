@@ -46,21 +46,32 @@ struct DetailView: View {
     }
 
     private var header: some View {
-        HStack {
-            Button {
-                manager.pendingAIAction = nil
-                manager.detailItemID = nil
-            } label: {
+        HStack(spacing: 6) {
+            Button(action: goBack) {
                 Label("Back", systemImage: "chevron.left")
             }
             .accessibilityLabel("Back to history")
+            // Esc returns to the history list.
+            Button(action: goBack) { EmptyView() }
+                .keyboardShortcut(.cancelAction)
+                .buttonStyle(.plain)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
             Spacer()
-            TypeBadge(type: item.type)
-            Text(item.date, style: .time)
+            SourceBadge(name: item.sourceAppName, bundleID: item.sourceBundleID, showUnknown: true)
+            Text("·").font(.caption).foregroundStyle(.tertiary)
+            Text(compactAge(of: item.date))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            TypeBadge(type: item.type)
         }
         .padding(.horizontal, 12)
+    }
+
+    private func goBack() {
+        manager.pendingAIAction = nil
+        manager.detailItemID = nil
     }
 
     // MARK: - Content
