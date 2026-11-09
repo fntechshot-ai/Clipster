@@ -293,10 +293,11 @@ struct ContentView: View {
 
     @ViewBuilder
     private func contextMenu(for item: ClipItem) -> some View {
-        Button(item.type == .image ? "Copy Image" : "Paste") { manager.paste(item, plainText: false) }
+        Button("Paste") { manager.paste(item, plainText: false) }
         if item.type == .text || item.type == .html {
             Button("Paste as Plain Text") { manager.paste(item, plainText: true) }
         }
+        Button(item.type == .image ? "Copy Image" : "Copy") { manager.copyOnly(item) }
         Divider()
         if item.type == .image {
             switch item.ocrStatus {
@@ -434,7 +435,7 @@ struct ClipRow: View {
             Spacer(minLength: 4)
 
             if hovering {
-                Button(item.type == .image ? "Copy" : "Paste") {
+                Button("Paste") {
                     manager.paste(item, plainText: false)
                 }
                 .buttonStyle(.borderedProminent)
@@ -450,10 +451,11 @@ struct ClipRow: View {
             }
 
             Menu {
-                Button(item.type == .image ? "Copy Image" : "Paste") { manager.paste(item, plainText: false) }
+                Button("Paste") { manager.paste(item, plainText: false) }
                 if item.type == .text || item.type == .html {
                     Button("Paste as Plain Text") { manager.paste(item, plainText: true) }
                 }
+                Button(item.type == .image ? "Copy Image" : "Copy") { manager.copyOnly(item) }
                 Divider()
                 Button("Details…") { manager.detailItemID = item.id }
                 Button(item.pinned ? "Unpin" : "Pin") { manager.togglePin(item) }

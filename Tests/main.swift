@@ -284,7 +284,7 @@ test("Universal Clipboard content is marked as coming from another device") {
     expect(m.items.first?.sourceBundleID == nil, "no bundle id for cross-device copies")
 }
 
-test("re-copying through Clipster preserves the original source; Clipster output is tracked as Clipster") {
+test("pasting and copying an item never duplicates history; Clipster output is tracked as Clipster") {
     let pb = NSPasteboard(name: NSPasteboard.Name("com.francisconeto.Clipster.tests.attr4"))
     let m = ClipboardManager(pasteboard: pb, storeURL: tmpBase.appendingPathComponent("attr4.json"))
     m.frontmostAppProvider = { ("ActiveApp", "com.active.app") }
@@ -296,8 +296,13 @@ test("re-copying through Clipster preserves the original source; Clipster output
 
     m.paste(original, plainText: false)
     m.tick()
-    expect(m.items.first?.text == "original content", "pasted item re-captured on top")
-    expect(m.items.first?.sourceAppName == "Figma", "original source preserved through paste, got \(m.items.first?.sourceAppName ?? "nil")")
+    expect(pb.string(forType: .string) == "original content", "paste puts the content on the clipboard")
+    expect(m.items.count == 1, "paste does not create a duplicate history entry")
+    expect(m.items.first?.sourceAppName == "Figma", "item and its source untouched by paste")
+
+    m.copyOnly(original)
+    m.tick()
+    expect(m.items.count == 1, "explicit copy does not create a duplicate either")
 
     m.copyString("ocr or ai output")
     m.tick()
@@ -321,10 +326,7 @@ test("stale self-attribution is discarded when another write lands in between") 
     let m = ClipboardManager(pasteboard: pb, storeURL: tmpBase.appendingPathComponent("attr5.json"))
     m.frontmostAppProvider = { ("Mail", "com.apple.mail") }
 
-    var original = textItem("mine")
-    original.sourceAppName = "Figma"
-    m.append(original)
-    m.paste(original, plainText: false)      // records pending attribution
+    m.copyString("clipster output")          // records pending Clipster attribution
     pb.clearContents()
     pb.setString("external copy raced in", forType: .string) // bumps change count
     m.tick()

@@ -450,7 +450,7 @@ final class ClipboardManager: ObservableObject {
         pendingAttribution = (pb.changeCount, Self.selfSourceName, Self.selfBundleID)
     }
 
-    func paste(_ item: ClipItem, plainText: Bool) {
+    private func writeToPasteboard(_ item: ClipItem, plainText: Bool) {
         pb.clearContents()
 
         switch item.type {
@@ -481,16 +481,25 @@ final class ClipboardManager: ObservableObject {
                 }
             }
         }
+    }
 
-        // Re-copying through Clipster must preserve the item's original source;
-        // the watcher will apply it when it records the new top item.
-        pendingAttribution = (pb.changeCount, item.sourceAppName, item.sourceBundleID)
+    func paste(_ item: ClipItem, plainText: Bool) {
+        writeToPasteboard(item, plainText: plainText)
 
-        // Ask the app to close the popover, refocus previous app, then press ⌘V.
-        // Only do this for text/html, since other types (images/files) may not be pasteable via ⌘V.
-        if item.type == .text || item.type == .html {
-            NotificationCenter.default.post(name: .clipsterPasteNow, object: nil)
-        }
+        // Pasting an existing item must not create a duplicate history entry;
+        // the item (and its recorded source) stays exactly where it is.
+        suppressWatcherForCurrentChange()
+
+        // Ask the app to close the popover, refocus the previous app, then press
+        // ⌘V — for every type: images and files paste fine in most targets, and
+        // the content is already on the clipboard if a target rejects it.
+        NotificationCenter.default.post(name: .clipsterPasteNow, object: nil)
+    }
+
+    /// Writes an item to the clipboard without pasting or touching history.
+    func copyOnly(_ item: ClipItem, plainText: Bool = false) {
+        writeToPasteboard(item, plainText: plainText)
+        suppressWatcherForCurrentChange()
     }
 
     func togglePin(_ item: ClipItem) {

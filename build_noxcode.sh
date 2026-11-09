@@ -67,7 +67,16 @@ cat > "${OUT}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Ad-hoc code signing"
-codesign --force --deep --sign - "${OUT}" 2>/dev/null || echo "   (codesign skipped)"
+echo "==> Code signing"
+# Prefer the stable local "Clipster Dev" identity (created by ./setup_signing.sh)
+# so macOS permission grants (Accessibility, Screen Recording) survive rebuilds.
+# Ad-hoc signatures change on every build, which silently invalidates them.
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "Clipster Dev"; then
+  codesign --force --deep --sign "Clipster Dev" "${OUT}"
+  echo "   (signed with Clipster Dev — permissions persist across updates)"
+else
+  codesign --force --deep --sign - "${OUT}" 2>/dev/null || echo "   (codesign skipped)"
+  echo "   (ad-hoc signed — run ./setup_signing.sh once to stop macOS forgetting permissions on every update)"
+fi
 
 echo "==> Done: ${OUT}"
